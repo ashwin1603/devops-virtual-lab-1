@@ -1,0 +1,53 @@
+name: DevOps CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure SSH
+        env:
+          K8S_SSH_PRIVATE_KEY: ${{ secrets.K8S_SSH_PRIVATE_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$K8S_SSH_PRIVATE_KEY" > ~/.ssh/k8s_deploy_key
+          chmod 600 ~/.ssh/k8s_deploy_key
+          ssh-keyscan -H 54.226.122.124 >> ~/.ssh/known_hosts
+
+      - name: Transfer application to Kubernetes server
+        run: |
+          tar -czf devops-lab-deploy.tar.gz app k8s
+          scp -i ~/.ssh/k8s_deploy_key \
+            devops-lab-deploy.tar.gz \
+            ec2-user@54.226.122.124:/home/ec2-user/
+
+      - name: Build and deploy
+        run: |
+          ssh -i ~/.ssh/k8s_deploy_key ec2-user@54.226.122.124 << 'EOF'
+            set -e
+
+            rm -rf ~/devops-lab-deploy
+            mkdir -p ~/devops-lab-deploy
+            tar -xzf ~/devops-lab-deploy.tar.gz -C ~/devops-lab-deploy
+
+            cd ~/devops-lab-deploy
+
+            docker build -t devops-lab-app:latest ./app
+
+            docker save devops-lab-app:latest | sudo k3s ctr images import -
+
+            kubectl apply -f k8s/deployment.yml
+            kubectl apply -f k8s/service.yml
+
+            kubectl rollout status deployment/devops-app --timeout=120s
+            kubectl get pods
+            kubectl get svc devops-service
+          EOF
